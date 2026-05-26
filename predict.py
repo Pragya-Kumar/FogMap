@@ -11,7 +11,7 @@ import matplotlib.pyplot as plt
 IMAGE_PATH = r"D:\FogMap\test_clear.jpg" 
 
 # UPGRADED: Now pointing to our fine-tuned model!
-MODEL_PATH = r"D:\FogMap\smog_classifier_finetuned.keras"
+MODEL_PATH = r"D:\FogMap\fogmap_efficientnet_v2.keras"
 IMG_SIZE = (224, 224)
 CLASS_NAMES = ['Clear', 'Smog'] # 0 is Clear, 1 is Smog
 
