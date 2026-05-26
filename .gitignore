@@ -1,8 +1,8 @@
 # Ignore the virtual environment
-.venv/
+.myenv/
 
 # Ignore the massive image dataset
-SMOG4000/
+Smog4000/
 
 # Ignore Python cache files
 __pycache__/
