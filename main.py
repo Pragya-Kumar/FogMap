@@ -10,7 +10,7 @@ app = FastAPI(title="Fog Detection API", description="Classifies images as Clear
 
 # 2. Load the Model ONCE at startup (Reduces processing latency!)
 print("Loading fine-tuned model into memory...")
-MODEL_PATH = "smog_classifier_finetuned.keras"
+MODEL_PATH = "fogmap_efficientnet_v2.keras"
 model = tf.keras.models.load_model(MODEL_PATH)
 
 # Warm-up the model so the first prediction is fast
