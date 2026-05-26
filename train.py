@@ -1,159 +1,118 @@
-import os
-import numpy as np
 import tensorflow as tf
-from tensorflow.keras.preprocessing import image_dataset_from_directory
-from tensorflow.keras import layers, models, applications
-import matplotlib.pyplot as plt
-from sklearn.metrics import classification_report, confusion_matrix
-import seaborn as sns
+from tensorflow.keras import layers, models, applications, callbacks
+import os
 
-# ==========================================
-# 1. Define Paths 
-# ==========================================
-base_dir = r"D:\FogMap\SMOG4000"
-
-train_dir = os.path.join(base_dir, 'train')
-val_dir = os.path.join(base_dir, 'valid')
-test_dir = os.path.join(base_dir, 'test')
-
-# ==========================================
-# 2. Hyperparameters & Dataset Loading
-# ==========================================
+# --- 1. CONFIGURATION ---
+DATASET_DIR = r"D:\FogMap\SMOG4000" # Main folder containing train, valid, and test
+IMG_SIZE = (224, 224)
 BATCH_SIZE = 32
-IMG_SIZE = (224, 224) # Resizing all those different sized images here!
-EPOCHS = 15
 
-print("Loading datasets...")
+print("🚀 Initializing Advanced FOGMAP Pipeline...")
 
-train_dataset = image_dataset_from_directory(
-    train_dir,
-    shuffle=True,
-    batch_size=BATCH_SIZE,
+# --- 2. LOAD DATASET ---
+# Pointing directly to the pre-split subfolders to fix the ValueError
+TRAIN_DIR = os.path.join(DATASET_DIR, "train")
+VAL_DIR = os.path.join(DATASET_DIR, "valid")
+
+print("📂 Loading datasets from split directories...")
+
+train_dataset = tf.keras.utils.image_dataset_from_directory(
+    TRAIN_DIR,
+    seed=42,
     image_size=IMG_SIZE,
-    label_mode='binary' 
-)
-
-val_dataset = image_dataset_from_directory(
-    val_dir,
-    shuffle=True,
     batch_size=BATCH_SIZE,
-    image_size=IMG_SIZE,
     label_mode='binary'
 )
 
-test_dataset = image_dataset_from_directory(
-    test_dir,
-    shuffle=False, # Keep false so labels match our predictions later
-    batch_size=BATCH_SIZE,
+val_dataset = tf.keras.utils.image_dataset_from_directory(
+    VAL_DIR,
+    seed=42,
     image_size=IMG_SIZE,
+    batch_size=BATCH_SIZE,
     label_mode='binary'
 )
 
-class_names = train_dataset.class_names
-print(f"Classes found: {class_names}")
+# Optimize datasets for performance
+AUTOTUNE = tf.data.AUTOTUNE
+train_dataset = train_dataset.cache().prefetch(buffer_size=AUTOTUNE)
+val_dataset = val_dataset.cache().prefetch(buffer_size=AUTOTUNE)
 
-# ==========================================
-# 3. Build the Model (Transfer Learning)
-# ==========================================
-# Data Augmentation Layer
+# --- 3. THE SECRET WEAPON: AGGRESSIVE DATA AUGMENTATION ---
+# This stops the model from confusing windshield glare with fog
 data_augmentation = tf.keras.Sequential([
-  layers.RandomFlip('horizontal'),
-  layers.RandomRotation(0.1),
-  layers.RandomZoom(0.1),
-])
+    layers.RandomFlip("horizontal"),
+    layers.RandomRotation(0.1),
+    layers.RandomZoom(0.1),
+    layers.RandomBrightness(factor=0.3), # Teaches the model to ignore sun glare
+    layers.RandomContrast(factor=0.3)    # Teaches the model to ignore washed-out windshields
+], name="aggressive_augmentation")
 
-# Preprocessing for MobileNetV2 (scales pixels to [-1, 1])
-preprocess_input = applications.mobilenet_v2.preprocess_input
+# --- 4. UPGRADED ARCHITECTURE: EfficientNetB0 ---
+# EfficientNet is much better at separating background haze from foreground objects
+base_model = applications.EfficientNetB0(
+    input_shape=(224, 224, 3),
+    include_top=False,
+    weights='imagenet'
+)
 
-# Load pre-trained MobileNetV2 base
-base_model = applications.MobileNetV2(input_shape=IMG_SIZE + (3,),
-                                      include_top=False,
-                                      weights='imagenet')
-base_model.trainable = False # Freeze base layers
+# Freeze the base model for initial training
+base_model.trainable = False
 
-# Construct final model
-inputs = tf.keras.Input(shape=IMG_SIZE + (3,))
+# Build the custom FOGMAP head
+inputs = tf.keras.Input(shape=(224, 224, 3))
 x = data_augmentation(inputs)
-x = preprocess_input(x)
 x = base_model(x, training=False)
 x = layers.GlobalAveragePooling2D()(x)
-x = layers.Dropout(0.2)(x) 
+x = layers.Dropout(0.4)(x) # 40% Dropout prevents the model from memorizing specific pixels
 outputs = layers.Dense(1, activation='sigmoid')(x)
 
-model = models.Model(inputs, outputs)
+model = tf.keras.Model(inputs, outputs)
 
-# ==========================================
-# 4. Compile and Train
-# ==========================================
-model.compile(optimizer=tf.keras.optimizers.Adam(learning_rate=0.001),
-              loss=tf.keras.losses.BinaryCrossentropy(),
-              metrics=['accuracy', tf.keras.metrics.Recall(name='recall')])
-
-# Early stopping to prevent overfitting
-early_stopping = tf.keras.callbacks.EarlyStopping(
-    monitor='val_loss', 
-    patience=3, 
-    restore_best_weights=True
+# --- 5. PHASE 1: WARM-UP TRAINING ---
+print("\n🔥 PHASE 1: Training Custom Head...")
+model.compile(
+    optimizer=tf.keras.optimizers.Adam(learning_rate=0.001),
+    loss='binary_crossentropy',
+    metrics=['accuracy']
 )
 
-print("\nStarting Training...")
-history = model.fit(
+# Callbacks to save the best version and stop if it stops learning
+early_stop = callbacks.EarlyStopping(patience=3, restore_best_weights=True)
+
+history_phase1 = model.fit(
     train_dataset,
-    epochs=EPOCHS,
     validation_data=val_dataset,
-    callbacks=[early_stopping]
+    epochs=10,
+    callbacks=[early_stop]
 )
 
-# ==========================================
-# 5. Evaluate on Test Data
-# ==========================================
-print("\nEvaluating on Test Dataset...")
-loss, accuracy, recall = model.evaluate(test_dataset)
-print(f"Test Accuracy: {accuracy*100:.2f}%")
-print(f"Test Recall: {recall*100:.2f}%")
+# --- 6. PHASE 2: DEEP FINE-TUNING ---
+print("\n🔬 PHASE 2: Deep Fine-Tuning (Teaching it what 'Haze' really is)...")
+base_model.trainable = True
 
-# ==========================================
-# 6. Plotting Results (Graphs & Confusion Matrix)
-# ==========================================
-# Plot Training History
-plt.figure(figsize=(12, 4))
-plt.subplot(1, 2, 1)
-plt.plot(history.history['accuracy'], label='Train Accuracy')
-plt.plot(history.history['val_accuracy'], label='Val Accuracy')
-plt.legend()
-plt.title('Accuracy over Epochs')
+# We only unfreeze the top 30 layers of EfficientNet to prevent destroying pre-trained edge detection
+for layer in base_model.layers[:-30]:
+    layer.trainable = False
 
-plt.subplot(1, 2, 2)
-plt.plot(history.history['loss'], label='Train Loss')
-plt.plot(history.history['val_loss'], label='Val Loss')
-plt.legend()
-plt.title('Loss over Epochs')
-plt.show()
+# Recompile with a MICRO learning rate so we don't shock the weights
+model.compile(
+    optimizer=tf.keras.optimizers.Adam(learning_rate=1e-5),
+    loss='binary_crossentropy',
+    metrics=['accuracy']
+)
 
-# Generate Confusion Matrix
-print("\nGenerating Confusion Matrix...")
-y_true = []
-y_pred_probs = []
+# Save the absolute best model
+checkpoint = callbacks.ModelCheckpoint(
+    "fogmap_efficientnet_v2.keras", 
+    save_best_only=True, 
+    monitor='val_accuracy'
+)
 
-for images, labels in test_dataset:
-    y_true.extend(labels.numpy().flatten())
-    preds = model.predict(images, verbose=0)
-    y_pred_probs.extend(preds.flatten())
+history_phase2 = model.fit(
+    train_dataset,
+    validation_data=val_dataset,
+    epochs=15,
+    callbacks=[early_stop, checkpoint]
+)
 
-y_pred = [1 if prob > 0.5 else 0 for prob in y_pred_probs]
-
-print("\nClassification Report:")
-print(classification_report(y_true, y_pred, target_names=class_names))
-
-cm = confusion_matrix(y_true, y_pred)
-plt.figure(figsize=(6, 5))
-sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', 
-            xticklabels=class_names, yticklabels=class_names)
-plt.xlabel('Predicted Label')
-plt.ylabel('True Label')
-plt.title('Confusion Matrix')
-plt.show()
-
-# Save the model
-model.save('smog_classifier_model.keras')
-print("\nModel saved as 'smog_classifier_model.keras'")
+print("\n✅ Training Complete! The robust model is saved as 'fogmap_efficientnet_v2.keras'")
